@@ -166,6 +166,19 @@ def api_delete():
     return jsonify(items)
 
 
+def _reorder(items, order):
+    pos = {i: n for n, i in enumerate(order)}
+    seq = iter(sorted([it for it in items if it.get("id") in pos], key=lambda it: pos[it["id"]]))
+    return [next(seq) if it.get("id") in pos else it for it in items]
+
+
+@app.route("/api/items/reorder", methods=["POST"])
+def api_reorder():
+    d = request.get_json(silent=True) or request.form
+    write_items(_reorder(read_items(), d.get("order") or []))
+    return jsonify(read_items())
+
+
 @app.route("/api/items/edit", methods=["POST"])
 def api_edit():
     d = request.get_json(silent=True) or request.form
@@ -273,6 +286,10 @@ PAGE = r"""<!doctype html>
       border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow);
       padding:.6rem .8rem; margin-bottom:.5rem; }
     .item.falta { border-color:var(--red); background:var(--red-bg); }
+    .item.dragging { opacity:.6; }
+    .ihandle { cursor:grab; color:var(--muted); opacity:.5; font-size:1.05rem; letter-spacing:-2px;
+      padding:.1rem .25rem; touch-action:none; user-select:none; -webkit-user-select:none; }
+    .ihandle:hover { opacity:.95; }
     .item .info { flex:1; min-width:150px; }
     .steppers { display:flex; gap:.7rem; flex-wrap:wrap; }
     .stp { display:flex; align-items:center; gap:.25rem; }
@@ -408,7 +425,7 @@ PAGE = r"""<!doctype html>
   }
   function row(it) {
     const falta = isFalta(it);
-    return `<div class="item ${falta ? 'falta' : ''}">
+    return `<div class="item ${falta ? 'falta' : ''}" data-item="${it.id}">
       <div class="info"><div><span class="nome" data-edit="${it.id}">${esc(it.nome)}</span>${falta ? ' <span class="pill falta">EM FALTA</span>' : ''}</div>
         <div class="meta">${meta(it)}</div></div>
       <div class="steppers">${stepper(it.id, 'stock', 'Stock', it.stock || 0)}${stepper(it.id, 'uso', 'Em uso', it.uso || 0)}</div>
@@ -443,8 +460,7 @@ PAGE = r"""<!doctype html>
         return sub.length ? `<div class="grouptitle">${LABELS[c.key]}</div>` + sub.map(rowCompra).join('') : '';
       }).join('');
     } else {
-      let list = items.filter(i => i.categoria === tab && (!term || fold(i.nome).includes(term)));
-      list.sort((a, b) => (isFalta(b) - isFalta(a)) || a.nome.localeCompare(b.nome, 'pt'));
+      const list = items.filter(i => i.categoria === tab && (!term || fold(i.nome).includes(term)));
       box.innerHTML = list.length ? list.map(row).join('')
         : '<div class="empty">Sem produtos nesta zona. Adiciona acima. 👆</div>';
     }
@@ -456,6 +472,36 @@ PAGE = r"""<!doctype html>
       api('/api/items/qty', { id: b.dataset.buy, campo: 'stock', delta: 1, por: me }));
     box.querySelectorAll('[data-del]').forEach(b => b.onclick = () => api('/api/items/delete', { id: b.dataset.del }));
     box.querySelectorAll('.nome[data-edit]').forEach(s => s.onclick = () => startEdit(s, s.dataset.edit));
+    if (mode !== 'lista' && !term) sortItems(box, order => api('/api/items/reorder', { order }));
+  }
+  // arrastar itens (pela pega ⠿) para reordenar dentro da zona
+  function sortItems(container, onReorder) {
+    container.querySelectorAll('[data-item]').forEach(el => {
+      el.insertAdjacentHTML('afterbegin', '<span class="ihandle" aria-hidden="true">⠿</span>');
+      const h = el.querySelector('.ihandle');
+      h.addEventListener('pointerdown', e => {
+        if (e.button) return;
+        let moved = false; const sy = e.clientY, sx = e.clientX;
+        const move = ev => {
+          if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 6) return;
+          if (!moved) { moved = true; paused = true; el.classList.add('dragging'); try { h.setPointerCapture(ev.pointerId); } catch (_) {} }
+          ev.preventDefault();
+          let best = null, bd = Infinity;
+          container.querySelectorAll('[data-item]:not(.dragging)').forEach(o => {
+            const r = o.getBoundingClientRect(), cy = r.top + r.height / 2;
+            const d = Math.abs(ev.clientY - cy); if (d < bd) { bd = d; best = { o, cy }; }
+          });
+          if (best) container.insertBefore(el, ev.clientY < best.cy ? best.o : best.o.nextSibling);
+        };
+        const up = () => {
+          document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up);
+          if (moved) { el.classList.remove('dragging');
+            onReorder([...container.querySelectorAll('[data-item]')].map(x => x.getAttribute('data-item')));
+          } else { paused = false; }
+        };
+        document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
+      });
+    });
   }
 
   document.querySelectorAll('#tabs .tab[data-tab]').forEach(t => t.addEventListener('click', () => { tab = t.dataset.tab; mode = 'cat'; render(); }));
