@@ -166,6 +166,24 @@ def api_delete():
     return jsonify(items)
 
 
+@app.route("/api/items/edit", methods=["POST"])
+def api_edit():
+    d = request.get_json(silent=True) or request.form
+    item_id = (d.get("id") or "").strip()
+    nome = (d.get("nome") or "").strip()
+    if not nome:
+        return jsonify({"ok": False}), 400
+    items = read_items()
+    for it in items:
+        if it.get("id") == item_id:
+            it["nome"] = nome
+            it["atualizado"] = _now()
+            it["por"] = (d.get("por") or "").strip() or None
+            break
+    write_items(items)
+    return jsonify(items)
+
+
 @app.route("/healthz")
 def healthz():
     return {"ok": True}
@@ -224,6 +242,12 @@ PAGE = r"""<!doctype html>
     .badge { font-size:.72rem; font-weight:800; min-width:18px; text-align:center; padding:0 .3rem;
       border-radius:999px; background:var(--red); color:#fff; }
     .tab.on .badge { background:#fff; color:var(--red); }
+    .hgroup { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }
+    .cart { display:flex; align-items:center; gap:.4rem; padding:.5rem .8rem; border-radius:999px;
+      border:1px solid var(--green); background:var(--green); color:#fff; font-weight:800; cursor:pointer; font-size:.9rem; }
+    .cart .badge { background:#fff; color:var(--green); }
+    .editinput { font-size:1rem; font-weight:700; padding:.25rem .4rem; border-radius:8px; min-width:160px;
+      border:1px solid var(--accent); background:var(--bg); color:var(--text); }
     .search { width:100%; padding:.65rem .85rem; font-size:1rem; border-radius:12px;
       border:1px solid var(--border); background:var(--card); color:var(--text); box-shadow:var(--shadow);
       margin-bottom:.9rem; }
@@ -245,7 +269,8 @@ PAGE = r"""<!doctype html>
     .sb:hover { border-color:var(--accent); color:var(--accent); }
     .num { min-width:22px; text-align:center; font-weight:800; }
     .num.zero { color:var(--red); }
-    .item .nome { font-weight:700; }
+    .item .nome { font-weight:700; cursor:text; border-radius:6px; padding:.05rem .2rem; }
+    .item .nome:hover { background:rgba(127,127,127,.12); }
     .item .meta { font-size:.76rem; color:var(--muted); }
     .pill { font-size:.74rem; font-weight:800; padding:.12rem .55rem; border-radius:999px; }
     .pill.tem { color:var(--green); background:var(--green-bg); border:1px solid var(--green); }
@@ -267,7 +292,10 @@ PAGE = r"""<!doctype html>
 <div class="wrap">
   <header>
     <h1>🧽 Inventário de Limpeza</h1>
-    <label class="me">Sou: <input id="me" placeholder="o teu nome" autocomplete="off"></label>
+    <div class="hgroup">
+      <button id="cartbtn" class="cart">🛒 A comprar <span class="badge" id="cartn">0</span></button>
+      <label class="me">Sou: <input id="me" placeholder="o teu nome" autocomplete="off"></label>
+    </div>
   </header>
 
   <div class="tabs" id="tabs">
@@ -276,7 +304,6 @@ PAGE = r"""<!doctype html>
       {{ c.icone }} {{ c.label }} <span class="badge hide" id="b-{{ c.key }}"></span>
     </div>
     {% endfor %}
-    <div class="tab" data-tab="compras">🛒 Compras <span class="badge hide" id="b-compras"></span></div>
   </div>
 
   <input id="q" class="search" type="search" autocomplete="off" placeholder="🔎 Pesquisar produto…">
@@ -297,7 +324,8 @@ PAGE = r"""<!doctype html>
   const fold = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   const CATS = {{ cats_json|safe }};
   const LABELS = Object.fromEntries(CATS.map(c => [c.key, c.icone + ' ' + c.label]));
-  let items = [], tab = CATS[0].key;
+  let items = [], tab = CATS[0].key, mode = 'cat', paused = false;
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   let me = localStorage.getItem('cln_me') || '';
   $('me').value = me;
   $('me').addEventListener('input', () => { me = $('me').value.trim(); localStorage.setItem('cln_me', me); });
@@ -315,11 +343,23 @@ PAGE = r"""<!doctype html>
     return parts.join(' · ');
   }
   async function api(path, body) {
-    const opt = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
-    const r = await fetch(path, body ? opt : undefined);
-    items = await r.json(); render();
+    paused = true;
+    try { const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+      items = await r.json(); } finally { paused = false; }
+    render();
   }
-  const load = () => fetch('/api/items').then(r => r.json()).then(d => { items = d; render(); });
+  const load = () => { if (paused) return; fetch('/api/items').then(r => r.json()).then(d => { items = d; render(); }); };
+  function startEdit(span, id) {
+    const cur = span.textContent;
+    const inp = document.createElement('input'); inp.className = 'editinput'; inp.value = cur;
+    span.replaceWith(inp); inp.focus(); inp.select(); paused = true;
+    let done = false;
+    const finish = save => { if (done) return; done = true; paused = false;
+      const v = inp.value.trim();
+      if (save && v && v !== cur) api('/api/items/edit', { id, nome: v, por: me }); else render(); };
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); finish(true); } else if (e.key === 'Escape') finish(false); });
+    inp.addEventListener('blur', () => finish(true));
+  }
 
   const isFalta = it => (it.stock || 0) === 0;
   function stepper(id, campo, label, val) {
@@ -331,14 +371,14 @@ PAGE = r"""<!doctype html>
   function row(it) {
     const falta = isFalta(it);
     return `<div class="item ${falta ? 'falta' : ''}">
-      <div class="info"><div class="nome">${it.nome} ${falta ? '<span class="pill falta">EM FALTA</span>' : ''}</div>
+      <div class="info"><div><span class="nome" data-edit="${it.id}">${esc(it.nome)}</span>${falta ? ' <span class="pill falta">EM FALTA</span>' : ''}</div>
         <div class="meta">${meta(it)}</div></div>
       <div class="steppers">${stepper(it.id, 'stock', 'Stock', it.stock || 0)}${stepper(it.id, 'uso', 'Em uso', it.uso || 0)}</div>
       <button class="x" data-del="${it.id}" title="remover">✕</button></div>`;
   }
   function rowCompra(it) {
     return `<div class="item falta">
-      <div class="info"><div class="nome">${it.nome}</div>
+      <div class="info"><div class="nome">${esc(it.nome)}</div>
         <div class="meta">em uso: ${it.uso || 0}${meta(it) ? ' · ' + meta(it) : ''}</div></div>
       <button class="act repor" data-buy="${it.id}">✓ Comprei (+1)</button>
       <button class="x" data-del="${it.id}" title="remover">✕</button></div>`;
@@ -349,14 +389,15 @@ PAGE = r"""<!doctype html>
       const n = items.filter(i => i.categoria === c.key && isFalta(i)).length;
       const b = $('b-' + c.key); b.textContent = n; b.classList.toggle('hide', n === 0); total += n;
     });
-    const bc = $('b-compras'); bc.textContent = total; bc.classList.toggle('hide', total === 0);
-    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === tab));
+    $('cartn').textContent = total;
+    document.querySelectorAll('#tabs .tab').forEach(t => t.classList.toggle('on', t.dataset.tab === tab && mode === 'cat'));
 
     const term = fold($('q').value.trim());
     const box = $('list');
-    $('addbar').classList.toggle('hide', tab === 'compras');
+    $('addbar').classList.toggle('hide', mode === 'lista');
+    $('tabs').classList.toggle('hide', mode === 'lista');
 
-    if (tab === 'compras') {
+    if (mode === 'lista') {
       const falta = items.filter(i => isFalta(i) && (!term || fold(i.nome).includes(term)));
       if (!falta.length) box.innerHTML = '<div class="empty">🎉 Nada em falta. Tudo com stock!</div>';
       else box.innerHTML = CATS.map(c => {
@@ -376,12 +417,14 @@ PAGE = r"""<!doctype html>
     box.querySelectorAll('[data-buy]').forEach(b => b.onclick = () =>
       api('/api/items/qty', { id: b.dataset.buy, campo: 'stock', delta: 1, por: me }));
     box.querySelectorAll('[data-del]').forEach(b => b.onclick = () => api('/api/items/delete', { id: b.dataset.del }));
+    box.querySelectorAll('.nome[data-edit]').forEach(s => s.onclick = () => startEdit(s, s.dataset.edit));
   }
 
-  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => { tab = t.dataset.tab; render(); }));
+  document.querySelectorAll('#tabs .tab[data-tab]').forEach(t => t.addEventListener('click', () => { tab = t.dataset.tab; mode = 'cat'; render(); }));
+  $('cartbtn').onclick = () => { mode = mode === 'lista' ? 'cat' : 'lista'; render(); };
   $('q').addEventListener('input', render);
   function addNovo() {
-    const nome = $('novo').value.trim(); if (!nome || tab === 'compras') return;
+    const nome = $('novo').value.trim(); if (!nome || mode === 'lista') return;
     $('novo').value = '';
     api('/api/items/add', { nome, categoria: tab, por: me });
   }
