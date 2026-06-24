@@ -75,16 +75,27 @@ def _fold(text):
                    if unicodedata.category(c) != "Mn")
 
 
+def _migrate(it):
+    """Garante os campos de quantidade (stock/uso) em itens antigos."""
+    if "stock" not in it:
+        # itens antigos tinham só 'estado': falta -> 0 em stock, tem -> 1.
+        it["stock"] = 0 if it.get("estado") == "falta" else 1
+    if "uso" not in it:
+        it["uso"] = 0
+    it.pop("estado", None)
+    return it
+
+
 def read_items():
     try:
         data = json.loads(ITEMS_FILE.read_text())
         if isinstance(data, list):
-            return data
+            return [_migrate(it) for it in data]
     except (FileNotFoundError, json.JSONDecodeError):
         pass
-    # primeira utilização -> semear
+    # primeira utilização -> semear (1 em stock, 0 em uso)
     items = [{"id": uuid.uuid4().hex[:10], "nome": n, "categoria": c,
-              "estado": "tem", "atualizado": None, "por": None}
+              "stock": 1, "uso": 0, "atualizado": None, "por": None}
              for c, n in SEED]
     write_items(items)
     return items
@@ -109,23 +120,35 @@ def api_add():
     cat = (d.get("categoria") or "").strip()
     if not nome or cat not in CAT_KEYS:
         return jsonify({"ok": False, "erro": "Nome e categoria válidos são obrigatórios."}), 400
-    estado = "falta" if (d.get("estado") == "falta") else "tem"
+    try:
+        stock = max(0, int(d.get("stock", 1)))
+    except (TypeError, ValueError):
+        stock = 1
     items = read_items()
     items.append({"id": uuid.uuid4().hex[:10], "nome": nome, "categoria": cat,
-                  "estado": estado, "atualizado": _now(), "por": (d.get("por") or "").strip() or None})
+                  "stock": stock, "uso": 0, "atualizado": _now(),
+                  "por": (d.get("por") or "").strip() or None})
     write_items(items)
     return jsonify(items)
 
 
-@app.route("/api/items/toggle", methods=["POST"])
-def api_toggle():
+@app.route("/api/items/qty", methods=["POST"])
+def api_qty():
+    """Ajusta uma quantidade. campo='stock'|'uso', delta=+1/-1 (ou valor exato)."""
     d = request.get_json(silent=True) or request.form
     item_id = (d.get("id") or "").strip()
+    campo = d.get("campo")
+    if campo not in ("stock", "uso"):
+        return jsonify({"ok": False, "erro": "campo inválido"}), 400
     por = (d.get("por") or "").strip() or None
+    try:
+        delta = int(d.get("delta", 0))
+    except (TypeError, ValueError):
+        delta = 0
     items = read_items()
     for it in items:
         if it.get("id") == item_id:
-            it["estado"] = "tem" if it.get("estado") == "falta" else "falta"
+            it[campo] = max(0, int(it.get(campo, 0)) + delta)
             it["atualizado"] = _now()
             it["por"] = por
             break
@@ -192,10 +215,19 @@ PAGE = r"""<!doctype html>
       border:1px solid var(--border); background:var(--card); color:var(--text); }
     .btn { padding:.6rem .9rem; border-radius:10px; border:1px solid var(--accent); background:var(--accent);
       color:#fff; font-weight:700; cursor:pointer; font-size:.92rem; white-space:nowrap; }
-    .item { display:flex; align-items:center; gap:.7rem; background:var(--card); border:1px solid var(--border);
-      border-radius:12px; box-shadow:var(--shadow); padding:.6rem .8rem; margin-bottom:.5rem; }
+    .item { display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; background:var(--card);
+      border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow);
+      padding:.6rem .8rem; margin-bottom:.5rem; }
     .item.falta { border-color:var(--red); background:var(--red-bg); }
-    .item .info { flex:1; min-width:0; }
+    .item .info { flex:1; min-width:150px; }
+    .steppers { display:flex; gap:.7rem; flex-wrap:wrap; }
+    .stp { display:flex; align-items:center; gap:.25rem; }
+    .stp .lbl { font-size:.7rem; color:var(--muted); font-weight:700; margin-right:.1rem; }
+    .sb { width:30px; height:30px; border-radius:8px; border:1px solid var(--border); background:var(--card);
+      color:var(--text); font-size:1.15rem; line-height:1; cursor:pointer; font-weight:700; }
+    .sb:hover { border-color:var(--accent); color:var(--accent); }
+    .num { min-width:22px; text-align:center; font-weight:800; }
+    .num.zero { color:var(--red); }
     .item .nome { font-weight:700; }
     .item .meta { font-size:.76rem; color:var(--muted); }
     .pill { font-size:.74rem; font-weight:800; padding:.12rem .55rem; border-radius:999px; }
@@ -272,19 +304,32 @@ PAGE = r"""<!doctype html>
   }
   const load = () => fetch('/api/items').then(r => r.json()).then(d => { items = d; render(); });
 
+  const isFalta = it => (it.stock || 0) === 0;
+  function stepper(id, campo, label, val) {
+    return `<div class="stp"><span class="lbl">${label}</span>
+      <button class="sb" data-q="${id}|${campo}|-1">−</button>
+      <span class="num ${campo === 'stock' && val === 0 ? 'zero' : ''}">${val}</span>
+      <button class="sb" data-q="${id}|${campo}|1">+</button></div>`;
+  }
   function row(it) {
-    const falta = it.estado === 'falta';
+    const falta = isFalta(it);
     return `<div class="item ${falta ? 'falta' : ''}">
-      <span class="pill ${falta ? 'falta' : 'tem'}">${falta ? 'EM FALTA' : 'Tem'}</span>
-      <div class="info"><div class="nome">${it.nome}</div><div class="meta">${meta(it)}</div></div>
-      <button class="act ${falta ? 'repor' : 'falta'}" data-tg="${it.id}">${falta ? '✓ Comprei' : 'Em falta'}</button>
+      <div class="info"><div class="nome">${it.nome} ${falta ? '<span class="pill falta">EM FALTA</span>' : ''}</div>
+        <div class="meta">${meta(it)}</div></div>
+      <div class="steppers">${stepper(it.id, 'stock', 'Stock', it.stock || 0)}${stepper(it.id, 'uso', 'Em uso', it.uso || 0)}</div>
+      <button class="x" data-del="${it.id}" title="remover">✕</button></div>`;
+  }
+  function rowCompra(it) {
+    return `<div class="item falta">
+      <div class="info"><div class="nome">${it.nome}</div>
+        <div class="meta">em uso: ${it.uso || 0}${meta(it) ? ' · ' + meta(it) : ''}</div></div>
+      <button class="act repor" data-buy="${it.id}">✓ Comprei (+1)</button>
       <button class="x" data-del="${it.id}" title="remover">✕</button></div>`;
   }
   function render() {
-    // badges (em falta por zona + total)
     let total = 0;
     CATS.forEach(c => {
-      const n = items.filter(i => i.categoria === c.key && i.estado === 'falta').length;
+      const n = items.filter(i => i.categoria === c.key && isFalta(i)).length;
       const b = $('b-' + c.key); b.textContent = n; b.classList.toggle('hide', n === 0); total += n;
     });
     const bc = $('b-compras'); bc.textContent = total; bc.classList.toggle('hide', total === 0);
@@ -295,21 +340,24 @@ PAGE = r"""<!doctype html>
     $('addbar').classList.toggle('hide', tab === 'compras');
 
     if (tab === 'compras') {
-      const falta = items.filter(i => i.estado === 'falta' && (!term || fold(i.nome).includes(term)));
-      if (!falta.length) { box.innerHTML = '<div class="empty">🎉 Nada em falta. Tudo reposto!</div>'; return; }
-      box.innerHTML = CATS.map(c => {
+      const falta = items.filter(i => isFalta(i) && (!term || fold(i.nome).includes(term)));
+      if (!falta.length) box.innerHTML = '<div class="empty">🎉 Nada em falta. Tudo com stock!</div>';
+      else box.innerHTML = CATS.map(c => {
         const sub = falta.filter(i => i.categoria === c.key);
-        if (!sub.length) return '';
-        return `<div class="grouptitle">${LABELS[c.key]}</div>` + sub.map(row).join('');
+        return sub.length ? `<div class="grouptitle">${LABELS[c.key]}</div>` + sub.map(rowCompra).join('') : '';
       }).join('');
     } else {
       let list = items.filter(i => i.categoria === tab && (!term || fold(i.nome).includes(term)));
-      list.sort((a, b) => (a.estado === b.estado ? 0 : a.estado === 'falta' ? -1 : 1)
-        || a.nome.localeCompare(b.nome, 'pt'));
+      list.sort((a, b) => (isFalta(b) - isFalta(a)) || a.nome.localeCompare(b.nome, 'pt'));
       box.innerHTML = list.length ? list.map(row).join('')
         : '<div class="empty">Sem produtos nesta zona. Adiciona acima. 👆</div>';
     }
-    box.querySelectorAll('[data-tg]').forEach(b => b.onclick = () => api('/api/items/toggle', { id: b.dataset.tg, por: me }));
+    box.querySelectorAll('[data-q]').forEach(b => b.onclick = () => {
+      const [id, campo, delta] = b.dataset.q.split('|');
+      api('/api/items/qty', { id, campo, delta: Number(delta), por: me });
+    });
+    box.querySelectorAll('[data-buy]').forEach(b => b.onclick = () =>
+      api('/api/items/qty', { id: b.dataset.buy, campo: 'stock', delta: 1, por: me }));
     box.querySelectorAll('[data-del]').forEach(b => b.onclick = () => api('/api/items/delete', { id: b.dataset.del }));
   }
 
