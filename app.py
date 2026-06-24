@@ -512,7 +512,7 @@ PAGE = r"""<!doctype html>
   makeSortable($('tabs'), 'cln_taborder', 'data-tab');
 
   load();
-  setInterval(load, 15000);  // mantém o quadro atualizado entre dispositivos
+  setInterval(load, 4000);  // auto-refresh em segundo plano (tempo quase real entre pessoas)
 </script>
 </body>
 </html>"""
