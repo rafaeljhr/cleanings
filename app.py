@@ -194,8 +194,10 @@ APPLE_ICON_PNG = base64.b64decode(
 
 
 @app.route("/apple-touch-icon.png")
+@app.route("/apple-touch-icon-180.png")
 def apple_touch_icon():
-    return Response(APPLE_ICON_PNG, mimetype="image/png")
+    return Response(APPLE_ICON_PNG, mimetype="image/png",
+                    headers={"Cache-Control": "public, max-age=604800"})
 
 
 PAGE = r"""<!doctype html>
@@ -204,7 +206,7 @@ PAGE = r"""<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Limpeza · Inventário</title>
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon-180.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Limpeza">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -228,8 +230,19 @@ PAGE = r"""<!doctype html>
     header { display:flex; align-items:center; justify-content:space-between; gap:.6rem; flex-wrap:wrap; }
     header h1 { margin:.1rem 0; font-size:1.4rem; }
     .me { display:flex; align-items:center; gap:.35rem; font-size:.82rem; color:var(--muted); }
-    .me input { padding:.35rem .5rem; border-radius:8px; border:1px solid var(--border);
-      background:var(--card); color:var(--text); width:110px; }
+    .me input, .me select { padding:.4rem .5rem; border-radius:8px; border:1px solid var(--border);
+      background:var(--card); color:var(--text); font-weight:700; font-size:.9rem; }
+    .modal { position:fixed; inset:0; z-index:100; display:flex; align-items:center; justify-content:center;
+      background:rgba(10,15,25,.45); backdrop-filter:blur(7px); -webkit-backdrop-filter:blur(7px); padding:1rem; }
+    .modalbox { background:var(--card); border:1px solid var(--border); border-radius:18px; padding:1.4rem 1.4rem 1.2rem;
+      box-shadow:0 20px 60px rgba(0,0,0,.4); width:100%; max-width:340px; text-align:center; }
+    .modaltitle { font-size:1.3rem; font-weight:800; margin-bottom:1rem; }
+    .people { display:flex; flex-direction:column; gap:.5rem; margin-bottom:1rem; }
+    .person { padding:.7rem; border-radius:12px; border:1px solid var(--border); background:var(--bg);
+      color:var(--text); font-size:1.05rem; font-weight:700; cursor:pointer; }
+    .person.sel { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .modalbox .btn { width:100%; padding:.7rem; font-size:1.05rem; }
+    .btn:disabled { opacity:.5; cursor:default; }
     .tabs { display:flex; gap:.4rem; flex-wrap:wrap; margin:.8rem 0; position:sticky; top:0;
       background:var(--bg); padding:.5rem 0; z-index:5; }
     .tab { font-size:.9rem; font-weight:700; padding:.5rem .8rem; border-radius:999px; cursor:grab;
@@ -289,12 +302,19 @@ PAGE = r"""<!doctype html>
   </style>
 </head>
 <body>
+<div id="whois" class="modal hide">
+  <div class="modalbox">
+    <div class="modaltitle">👋 Quem és?</div>
+    <div class="people" id="people"></div>
+    <button id="whoisok" class="btn" disabled>OK</button>
+  </div>
+</div>
 <div class="wrap">
   <header>
     <h1>🧽 Inventário de Limpeza</h1>
     <div class="hgroup">
       <button id="cartbtn" class="cart">🛒 A comprar <span class="badge" id="cartn">0</span></button>
-      <label class="me">Sou: <input id="me" placeholder="o teu nome" autocomplete="off"></label>
+      <label class="me">👤 <select id="me"></select></label>
     </div>
   </header>
 
@@ -326,9 +346,27 @@ PAGE = r"""<!doctype html>
   const LABELS = Object.fromEntries(CATS.map(c => [c.key, c.icone + ' ' + c.label]));
   let items = [], tab = CATS[0].key, mode = 'cat', paused = false;
   const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  let me = localStorage.getItem('cln_me') || '';
-  $('me').value = me;
-  $('me').addEventListener('input', () => { me = $('me').value.trim(); localStorage.setItem('cln_me', me); });
+  const PEOPLE = ['Rafael', 'Mariana', 'Cecília', 'Samara'];
+  let me = localStorage.getItem('cln_pessoa') || '';
+  const sel = $('me');
+  sel.innerHTML = PEOPLE.map(p => `<option>${p}</option>`).join('');
+  sel.value = me || PEOPLE[0];
+  sel.addEventListener('change', () => { me = sel.value; localStorage.setItem('cln_pessoa', me); });
+  // pop-up "Quem és?" — escolha guardada no dispositivo (localStorage; funciona atrás do Cloudflare)
+  (function () {
+    const box = $('people'); let chosen = '';
+    box.innerHTML = PEOPLE.map(p => `<button class="person" data-p="${p}">${p}</button>`).join('');
+    box.querySelectorAll('.person').forEach(b => b.onclick = () => {
+      chosen = b.dataset.p;
+      box.querySelectorAll('.person').forEach(x => x.classList.toggle('sel', x === b));
+      $('whoisok').disabled = false;
+    });
+    $('whoisok').onclick = () => {
+      if (!chosen) return;
+      me = chosen; localStorage.setItem('cln_pessoa', me); sel.value = me; $('whois').classList.add('hide');
+    };
+    if (!me) $('whois').classList.remove('hide');
+  })();
 
   function rel(iso) {
     if (!iso) return '';
