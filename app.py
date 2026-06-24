@@ -286,7 +286,8 @@ PAGE = r"""<!doctype html>
       border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow);
       padding:.6rem .8rem; margin-bottom:.5rem; }
     .item.falta { border-color:var(--red); background:var(--red-bg); }
-    .item.dragging { opacity:.6; }
+    .item.dragging { opacity:.98; box-shadow:0 10px 26px rgba(0,0,0,.32); position:relative; z-index:20; }
+    body.dragging-on { user-select:none; -webkit-user-select:none; cursor:grabbing; }
     .ihandle { cursor:grab; color:var(--muted); opacity:.5; font-size:1.05rem; letter-spacing:-2px;
       padding:.1rem .25rem; touch-action:none; user-select:none; -webkit-user-select:none; }
     .ihandle:hover { opacity:.95; }
@@ -481,10 +482,12 @@ PAGE = r"""<!doctype html>
       const h = el.querySelector('.ihandle');
       h.addEventListener('pointerdown', e => {
         if (e.button) return;
-        let moved = false; const sy = e.clientY, sx = e.clientX;
+        e.preventDefault();
+        const sx = e.clientX, sy = e.clientY; let moved = false;
         const move = ev => {
           if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 6) return;
-          if (!moved) { moved = true; paused = true; el.classList.add('dragging'); try { h.setPointerCapture(ev.pointerId); } catch (_) {} }
+          if (!moved) { moved = true; paused = true; document.body.classList.add('dragging-on');
+            el.classList.add('dragging'); try { h.setPointerCapture(ev.pointerId); } catch (_) {} }
           ev.preventDefault();
           let best = null, bd = Infinity;
           container.querySelectorAll('[data-item]:not(.dragging)').forEach(o => {
@@ -492,9 +495,13 @@ PAGE = r"""<!doctype html>
             const d = Math.abs(ev.clientY - cy); if (d < bd) { bd = d; best = { o, cy }; }
           });
           if (best) container.insertBefore(el, ev.clientY < best.cy ? best.o : best.o.nextSibling);
+          el.style.transform = '';
+          const r = el.getBoundingClientRect();
+          el.style.transform = `translateY(${ev.clientY - (r.top + r.height / 2)}px)`;
         };
         const up = () => {
           document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up);
+          document.body.classList.remove('dragging-on'); el.style.transform = '';
           if (moved) { el.classList.remove('dragging');
             onReorder([...container.querySelectorAll('[data-item]')].map(x => x.getAttribute('data-item')));
           } else { paused = false; }
