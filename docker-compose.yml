@@ -1,0 +1,24 @@
+# Inventário de Limpeza — corre no porto 8002.
+#   docker compose up -d --build
+# Aceder em:  http://<ip-do-pi>:8002
+services:
+  cleanings:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cleanings
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    environment:
+      - DATA_DIR=/data
+    volumes:
+      - data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  data:
